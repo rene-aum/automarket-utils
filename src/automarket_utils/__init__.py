@@ -9,6 +9,7 @@ _EXPORTS = {
     "add_year_week": "automarket_utils.core",
     "clean_mojibake": "automarket_utils.core",
     "create_csv_file_in_drive_folder": "automarket_utils.drive",
+    "create_folder_in_drive_folder": "automarket_utils.drive",
     "create_sheets_in_drive_folder": "automarket_utils.drive",
     "custom_read": "automarket_utils.core",
     "from_drive_to_local": "automarket_utils.drive",

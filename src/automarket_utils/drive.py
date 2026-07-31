@@ -46,6 +46,24 @@ def create_sheets_in_drive_folder(gc, file_name, folder_id, df_to_set=None):
     print(f"Google Sheet {file_name} created and updated in folder ID: {folder_id}")
 
 
+def create_folder_in_drive_folder(drive, folder_name, parent_folder_id):
+    """Create a Google Drive folder inside a parent folder."""
+    folder_metadata = {
+        "title": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [{"id": parent_folder_id}],
+    }
+
+    try:
+        folder = drive.CreateFile(folder_metadata)
+        folder.Upload()
+        print("Created folder ID:", folder["id"])
+        return folder["id"]
+    except Exception as e:
+        print(f"Failed to create folder {folder_name!r}: {e}")
+        raise
+
+
 def update_sheets_in_drive_folder(
     gc,
     spreadsheet_id,
