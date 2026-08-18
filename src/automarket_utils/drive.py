@@ -69,11 +69,16 @@ def update_sheets_in_drive_folder(
     spreadsheet_id,
     worksheet_name,
     df_to_update,
+    reset_number_formats: bool = True,
     retries: int = 3,
     initial_delay: float = 2.0,
     backoff_factor: float = 2.0,
 ):
-    """Update a Google Sheets worksheet with a DataFrame, retrying on failure.
+    """Update a worksheet with a DataFrame, retrying on failure.
+
+    By default, existing number formats are reset before writing.  This avoids
+    stale date, currency, or percentage formats changing how replacement data
+    is displayed, while preserving other worksheet formatting and settings.
     """
     gspread_dataframe = _require_module("gspread_dataframe", "drive")
 
@@ -87,6 +92,22 @@ def update_sheets_in_drive_folder(
             spreadsheet_title = spreadsheet.title
             worksheet = spreadsheet.worksheet(worksheet_name)
             worksheet.clear()
+            if reset_number_formats:
+                spreadsheet.batch_update(
+                    {
+                        "requests": [
+                            {
+                                "repeatCell": {
+                                    "range": {"sheetId": worksheet.id},
+                                    "cell": {
+                                        "userEnteredFormat": {"numberFormat": {}}
+                                    },
+                                    "fields": "userEnteredFormat.numberFormat",
+                                }
+                            }
+                        ]
+                    }
+                )
             gspread_dataframe.set_with_dataframe(worksheet, df_to_update)
 
             print(
