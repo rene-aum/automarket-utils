@@ -186,6 +186,50 @@ def list_file_ids_for_drive_folder(drive, folder_id: str):
     return file_id_dict
 
 
+def list_sheets_ids_for_drive_folder(drive, folder_id: str) -> dict:
+    """Recursively list all Google Sheets in a Drive folder and its subfolders.
+
+    Walks the entire folder tree rooted at ``folder_id`` and collects every
+    file whose MIME type is ``application/vnd.google-apps.spreadsheet``.
+    Sub-folders are traversed automatically at any depth.
+
+    Parameters
+    ----------
+    drive : GoogleDrive
+        Authenticated PyDrive2 client.
+    folder_id : str
+        Drive ID of the root folder to search.
+
+    Returns
+    -------
+    dict
+        ``{sheet_title: sheet_drive_id}`` for every Sheets file found.
+        When two files share the same title the duplicate entry is keyed as
+        ``"<title> (<drive_id>)"`` to prevent collisions.
+    """
+    SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
+    FOLDER_MIME = "application/vnd.google-apps.folder"
+
+    result: dict = {}
+
+    def _walk(fid: str) -> None:
+        items = drive.ListFile(
+            {"q": f"'{fid}' in parents and trashed=false"}
+        ).GetList()
+        for item in items:
+            mime = item.get("mimeType", "")
+            if mime == SHEETS_MIME:
+                title = item["title"]
+                if title in result:
+                    title = f"{title} ({item['id']})"
+                result[title] = item["id"]
+            elif mime == FOLDER_MIME:
+                _walk(item["id"])
+
+    _walk(folder_id)
+    return result
+
+
 def read_csv_from_drive(drive, file_id):
     pd = importlib.import_module("pandas")
     file = drive.CreateFile({"id": file_id})
@@ -336,6 +380,111 @@ def update_sheets_in_drive_folder_chunked(
                 print(f"Retrying chunk in {delay} seconds...")
                 time.sleep(delay)
                 delay *= backoff_factor
+
+
+def update_sheets_in_drive_folder_fast(
+    gc,
+    spreadsheet_id,
+    worksheet_name,
+    df_to_update,
+    retries: int = 3,
+    initial_delay: float = 2.0,
+    backoff_factor: float = 2.0,
+):
+    """Write a DataFrame to a specific worksheet via the Sheets ``pasteData`` API.
+
+    Uploads the DataFrame as a single CSV payload using the ``pasteData``
+    ``batchUpdate`` request.  Compared to :func:`update_sheets_in_drive_folder`
+    this is significantly faster for small-to-medium tables (up to ~50 k rows)
+    and, critically, **preserves the worksheet's ``sheetId``** and all other
+    tabs in the workbook.  For very large tables (≳400 k rows) the payload
+    may exceed the API size limit; use
+    :func:`update_sheets_in_drive_folder_chunked` instead.
+
+    Parameters
+    ----------
+    gc : gspread.Client
+        Authenticated gspread client.
+    spreadsheet_id : str
+        Drive ID of the target Google Sheet.
+    worksheet_name : str
+        Name of the worksheet to overwrite.  The sheet is created if it does
+        not exist.
+    df_to_update : pandas.DataFrame
+        Data to write.
+    retries : int, default 3
+        Total number of attempts for each internal API call.
+    initial_delay : float, default 2.0
+        Seconds to wait before the first retry.
+    backoff_factor : float, default 2.0
+        Multiplier applied to the delay after each failed attempt.
+
+    Returns
+    -------
+    int
+        The ``sheetId`` of the written worksheet.
+    """
+    csv_data = df_to_update.to_csv(index=False)
+
+    def _retry(step, method, *args, **kwargs):
+        attempt = 0
+        delay = initial_delay
+        while attempt < retries:
+            attempt += 1
+            try:
+                return method(*args, **kwargs)
+            except Exception as exc:
+                if attempt >= retries:
+                    raise
+                print(
+                    f"[{step}: attempt {attempt}/{retries}] {exc}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+                delay *= backoff_factor
+
+    spreadsheet = _retry("Open spreadsheet", gc.open_by_key, spreadsheet_id)
+    spreadsheet_title = spreadsheet.title
+
+    try:
+        ws = _retry("Get worksheet", spreadsheet.worksheet, worksheet_name)
+        _retry("Clear worksheet", ws.clear)
+    except Exception:
+        ws = _retry(
+            "Add worksheet",
+            spreadsheet.add_worksheet,
+            title=worksheet_name,
+            rows=1,
+            cols=1,
+        )
+
+    _retry(
+        "Paste data",
+        gc.http_client.batch_update,
+        spreadsheet_id,
+        {
+            "requests": [
+                {
+                    "pasteData": {
+                        "coordinate": {
+                            "sheetId": ws.id,
+                            "rowIndex": 0,
+                            "columnIndex": 0,
+                        },
+                        "data": csv_data,
+                        "type": "PASTE_NORMAL",
+                        "delimiter": ",",
+                    }
+                }
+            ]
+        },
+    )
+
+    print(
+        f"Google Sheet {spreadsheet_title!r} - {worksheet_name!r} "
+        f"updated via pasteData (sheetId={ws.id})."
+    )
+    return ws.id
 
 
 def insert_value_by_row_id_and_column_name(
