@@ -242,3 +242,59 @@ class AWSToolbox:
             engine=engine,
             **kwargs,
         )
+
+    def check_latest_partition_date(
+        self,
+        base_path,
+        levels=("year", "month", "day"),
+    ):
+        """Check whether the latest hive partition corresponds to today's date.
+
+        Resolves the most recent partition via :meth:`latest_partition_path`
+        and extracts the date from the ``year=``, ``month=``, and ``day=``
+        directory components.  Prints ``[Date OK]`` when the partition date
+        matches today, or ``[Check Pipeline]`` along with the found date when
+        it does not.
+
+        Designed to be called immediately after :meth:`read_latest_partition`
+        to surface stale data early, before any downstream processing or
+        writes occur.
+
+        Parameters
+        ----------
+        base_path : str
+            S3 base path to inspect — the same value passed to
+            :meth:`read_latest_partition`.
+        levels : tuple, default ``("year", "month", "day")``
+            Partition hierarchy to traverse.  Must match the hierarchy used
+            when the data was written.
+
+        Returns
+        -------
+        bool
+            ``True`` if the latest partition date equals today, ``False``
+            otherwise.
+        """
+        from datetime import date
+
+        path = self.latest_partition_path(base_path, levels=levels)
+        today = date.today()
+
+        parts = {}
+        for segment in path.split("/"):
+            m = re.fullmatch(r"(\w+)=(\d+)", segment)
+            if m:
+                parts[m.group(1)] = int(m.group(2))
+
+        try:
+            partition_date = date(parts["year"], parts["month"], parts["day"])
+        except KeyError:
+            print(f"  [Check partition] Could not parse date from path: {path}")
+            return False
+
+        if partition_date == today:
+            print(f"  [Date OK] {partition_date}")
+            return True
+
+        print(f"  [Check Pipeline] Latest partition: {partition_date} (today: {today})")
+        return False
